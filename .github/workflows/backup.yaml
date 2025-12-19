@@ -3,11 +3,7 @@ name: supabase-backup
 on:
   push:
     branches: [main, dev]
-  pull_request:
-    branches: [main, dev]
   workflow_dispatch:
-  schedule:
-    - cron: "0 0 * * *" # 每天北京时间早上 8 点运行
 
 env:
   BACKUP_ENABLED: true
@@ -17,41 +13,36 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    env:
-      # ⚠️ 重要：Secret 中的 URL 用户名必须是 postgres.bobomkjgisjtibbsfptv
-      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-      BACKUP_ENABLED: ${{ vars.BACKUP_ENABLED }} 
     steps:
-      - name: Check if backups are enabled
-        run: |
-          if [ "$BACKUP_ENABLED" != "true" ]; then
-            echo "Backups are disabled. Exiting workflow."
-            exit 0
-          fi
-
       - name: Checkout repository
         uses: actions/checkout@v3
 
       - name: Setup Supabase CLI
         uses: supabase/setup-cli@v1
-        with:
-          version: latest
 
       - name: Create backup folder
         run: mkdir -p supabase/backups
 
-      - name: Backup roles
-        run: supabase db dump --db-url "$SUPABASE_DB_URL" -f supabase/backups/roles.sql --role-only
+      - name: Run Backups
+        # 核心改动：不再拼 URL，而是分字段传入，强制 CLI 使用这些值
+        env:
+          # 请确保在 GitHub Secrets 中 DB_PASS 存的是原始密码（不需要 URL Encode）
+          PGPASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_USER: "postgres.bobomkjgisjtibbsfptv"
+          DB_HOST: "aws-1-ap-south-1.pooler.supabase.com"
+        run: |
+          # 构造一个最简化的连接串，确保用户名被完整读取
+          # 端口尝试改为 6543
+          TARGET_URL="postgresql://$DB_USER@$DB_HOST:6543/postgres?pgbouncer=true"
+          
+          echo "Connecting as $DB_USER to $DB_HOST..."
+          
+          supabase db dump --db-url "$TARGET_URL" -f supabase/backups/roles.sql --role-only
+          supabase db dump --db-url "$TARGET_URL" -f supabase/backups/schema.sql
+          supabase db dump --db-url "$TARGET_URL" -f supabase/backups/data.sql --data-only --use-copy
 
-      - name: Backup schema
-        run: supabase db dump --db-url "$SUPABASE_DB_URL" -f supabase/backups/schema.sql
-
-      - name: Backup data
-        # 使用 --use-copy 提高大数据量下的备份速度
-        run: supabase db dump --db-url "$SUPABASE_DB_URL" -f supabase/backups/data.sql --data-only --use-copy
-
-      - name: Commit and Push backups
+      - name: Commit backups
         uses: stefanzweifel/git-auto-commit-action@v4
         with:
-          commit_message: "chore: automated supabase backup [skip ci]"
+          commit_message: "chore: automated supabase backup"
           file_pattern: 'supabase/backups/*.sql'
